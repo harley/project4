@@ -3,15 +3,26 @@ from langfuse.openai import AsyncOpenAI
 
 
 class Agent:
-    def __init__(self, name, client, prompt, model="gpt-4o", temperature=0.2):
+    def __init__(
+        self,
+        name,
+        client,
+        prompt,
+        functions=None,
+        model="gpt-4o",
+        temperature=0.2,
+    ):
         self.name = name
         self.client = client
         self.system_prompt = prompt
+        self.functions = functions
         self.gen_kwargs = {
             "model": model,
             "temperature": temperature,
             "max_tokens": 1000,
         }
+        if functions:
+            self.gen_kwargs["functions"] = functions
         self.message_history = [{"role": "system", "content": self.system_prompt}]
 
     @observe
@@ -27,7 +38,11 @@ class Agent:
 
         response_message = ""
         async for part in stream:
-            if token := part.choices[0].delta.content or "":
+            if part.choices[0].delta.function_call:
+                yield {
+                    "function_call": part.choices[0].delta.function_call.model_dump()
+                }
+            elif token := part.choices[0].delta.content or "":
                 response_message += token
                 yield token
 
@@ -38,3 +53,7 @@ class Agent:
 
     def clear_message_history(self):
         self.message_history = [{"role": "system", "content": self.system_prompt}]
+
+    def update_system_prompt(self, new_prompt):
+        self.system_prompt = new_prompt
+        self.message_history[0] = {"role": "system", "content": self.system_prompt}
