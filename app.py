@@ -1,54 +1,88 @@
+import os
+import base64
 from dotenv import load_dotenv
 import chainlit as cl
+from agents import Agent
+from langfuse.openai import AsyncOpenAI
 
 load_dotenv()
 
-from langfuse.decorators import observe
-from langfuse.openai import AsyncOpenAI
-
 client = AsyncOpenAI()
 
-gen_kwargs = {"model": "gpt-4o", "temperature": 0.2}
+PLANNING_PROMPT = """\
+You are a software architect, preparing to build the web page in the image. Generate a plan, \
+described below, in markdown format.
 
-SYSTEM_PROMPT = """\
-You are a philosopher.
+In a section labeled "Overview", analyze the image, and describe the elements on the page, \
+their positions, and the layout of the major sections.
+
+Using vanilla HTML and CSS, discuss anything about the layout that might have different \
+options for implementation. Review pros/cons, and recommend a course of action.
+
+In a section labeled "Milestones", describe an ordered set of milestones for methodically \
+building the web page, so that errors can be detected and corrected early. Pay close attention \
+to the aligment of elements, and describe clear expectations in each milestone. Do not include \
+testing milestones, just implementation.
+
+Milestones should be formatted like this:
+
+ - [ ] 1. This is the first milestone
+ - [ ] 2. This is the second milestone
+ - [ ] 3. This is the third milestone
 """
 
+# Create an instance of the Agent class
+planning_agent = Agent(name="Planning Agent", client=client, prompt=PLANNING_PROMPT)
 
-@observe
+
 @cl.on_chat_start
-def on_chat_start():
-    message_history = [{"role": "system", "content": SYSTEM_PROMPT}]
-    cl.user_session.set("message_history", message_history)
-
-
-@observe
-async def generate_response(client, message_history, gen_kwargs):
-    response_message = cl.Message(content="")
-    await response_message.send()
-
-    stream = await client.chat.completions.create(
-        messages=message_history, stream=True, **gen_kwargs
-    )
-    async for part in stream:
-        if token := part.choices[0].delta.content or "":
-            await response_message.stream_token(token)
-
-    await response_message.update()
-
-    return response_message
+async def on_chat_start():
+    planning_agent.clear_message_history()
+    await cl.Message(
+        content="Welcome! Please upload an image of the website you want to plan."
+    ).send()
 
 
 @cl.on_message
-@observe
 async def on_message(message: cl.Message):
-    message_history = cl.user_session.get("message_history", [])
-    message_history.append({"role": "user", "content": message.content})
+    if message.elements:
+        # Handle image upload
+        image = message.elements[0]
+        if image.type == "image":
+            # Read and encode the image
+            with open(image.path, "rb") as img_file:
+                base64_image = base64.b64encode(img_file.read()).decode("utf-8")
 
-    response_message = await generate_response(client, message_history, gen_kwargs)
+            # Prepare the message with the image
+            image_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Analyze this website design:"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+                    },
+                ],
+            }
 
-    message_history.append({"role": "assistant", "content": response_message.content})
-    cl.user_session.set("message_history", message_history)
+            response_message = cl.Message(content="")
+            await response_message.send()
+
+            async for token in planning_agent.generate_response(image_message):
+                await response_message.stream_token(token)
+
+            await response_message.update()
+        else:
+            await cl.Message(content="Please upload an image file.").send()
+    else:
+        # Handle regular text messages
+        response_message = cl.Message(content="")
+        await response_message.send()
+
+        async for token in planning_agent.generate_response(message.content):
+            await response_message.stream_token(token)
+
+        await response_message.update()
 
 
 if __name__ == "__main__":
