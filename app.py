@@ -2,7 +2,7 @@ import os
 import base64
 from dotenv import load_dotenv
 import chainlit as cl
-from agents import Agent
+from agents import Agent, ImplementationAgent
 from langfuse.openai import AsyncOpenAI
 
 load_dotenv()
@@ -53,6 +53,19 @@ planning_agent = Agent(
     prompt=PLANNING_PROMPT,
 )
 
+implementation_agent = ImplementationAgent(client=client)
+
+
+async def callAgent(agent_name):
+    if agent_name == "implementation":
+        message_history = cl.user_session.get("message_history")
+        response = await implementation_agent.execute(message_history)
+        message_history.append({"role": "assistant", "content": response})
+        cl.user_session.set("message_history", message_history)
+        return response
+    else:
+        return f"Unknown agent: {agent_name}"
+
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -66,6 +79,22 @@ async def on_chat_start():
 async def on_message(message: cl.Message):
     message_history = cl.user_session.get("message_history")
 
+    # Check for implementation request
+    implementation_keywords = [
+        "implement",
+        "execute",
+        "build",
+        "create",
+        "start",
+        "begin",
+        "next milestone",
+    ]
+    if any(keyword in message.content.lower() for keyword in implementation_keywords):
+        response = await callAgent("implementation")
+        await cl.Message(content=response).send()
+        return
+
+    # Handle image upload
     if message.elements:
         image = message.elements[0]
         if image.type == "image":
@@ -85,18 +114,20 @@ async def on_message(message: cl.Message):
                     },
                 ],
             }
+            response = await planning_agent.execute([user_message])
         else:
             await cl.Message(content="Please upload an image file.").send()
             return
     else:
+        # Handle regular messages
         user_message = {"role": "user", "content": message.content}
-
-    message_history.append(user_message)
-
-    response = await planning_agent.execute(message_history)
+        message_history.append(user_message)
+        response = await planning_agent.execute(message_history)
 
     message_history.append({"role": "assistant", "content": response})
     cl.user_session.set("message_history", message_history)
+
+    await cl.Message(content=response).send()
 
 
 if __name__ == "__main__":
